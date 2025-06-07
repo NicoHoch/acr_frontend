@@ -44,27 +44,35 @@ def login(username: str, password: str) -> bool:
 
 
 def send_message(message: str):
-    """Send a message to the FastAPI backend and store the response."""
+    """Send a message to the FastAPI backend and stream the response with markdown formatting."""
     try:
         chat_endpoint = API_URL + "/chat"
-        response = requests.post(
+        with requests.post(
             chat_endpoint,
             json={"message": message},
             auth=HTTPBasicAuth(st.session_state.username, st.session_state.password),
-            timeout=5,
-        )
-        if response.status_code == 200:
-            response_data = response.json()
-            st.session_state.chat_history.append({"role": "user", "content": message})
-            st.session_state.chat_history.append(
-                {
-                    "role": "assistant",
-                    "content": response_data["message"],
-                    "username": response_data["username"],
-                }
-            )
-        else:
-            st.error("Failed to send message. Please try again.")
+            timeout=60,
+            stream=True,
+        ) as response:
+            if response.status_code == 200:
+                streamed_content = ""
+                response_box = st.empty()
+                for chunk in response.iter_content(
+                    chunk_size=1024, decode_unicode=True
+                ):
+                    if chunk:
+                        streamed_content += chunk
+                        # Display as markdown (remove code block if not always code)
+                        response_box.markdown(streamed_content)
+                st.session_state.chat_history.append(
+                    {
+                        "role": "assistant",
+                        "content": streamed_content,
+                        "username": st.session_state.username,
+                    }
+                )
+            else:
+                st.error("Failed to send message. Please try again.")
     except requests.RequestException as e:
         st.error(f"Error communicating with backend: {e}")
 
@@ -80,9 +88,7 @@ def index_documents():
         )
         if response.status_code == 200:
             response_data = response.json()
-            st.success(
-                f"Document indexing completed successfully! {response_data['message']}"
-            )
+            st.success(f"{response_data['message']}")
         else:
             st.error("Failed to index documents. Please try again.")
     except requests.RequestException as e:
@@ -104,7 +110,7 @@ with st.sidebar:
         st.write(f"Logged in as: {st.session_state.username}")
         if st.button("Reset Chat History"):
             reset_chat_history()
-        if st.button("Index Documents"):
+        if st.button("Re-Index Documents"):
             index_documents()
 
 # Login page
@@ -127,11 +133,13 @@ else:
                 if message["role"] == "user":
                     st.markdown(message["content"])
                 else:
-                    st.markdown(
-                        f"**{message['username']} (Server):** {message['content']}"
-                    )
+                    st.markdown(f"{message['content']}")
 
     # Chat input at the bottom
     if user_text := st.chat_input("Type your message and hit Enter…"):
+        st.session_state.chat_history.append({"role": "user", "content": user_text})
+        with st.chat_message("user"):
+            st.markdown(user_text)
+
         send_message(user_text)
         st.rerun()
