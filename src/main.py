@@ -36,6 +36,19 @@ def login(username: str, password: str) -> bool:
             st.session_state.logged_in = True
             st.session_state.username = username
             st.session_state.password = password
+
+            # Extract session_id from response.text
+            try:
+                response_json = json.loads(response.text)
+                session_id = response_json.get("session_id", None)
+                if session_id:
+                    st.session_state.session_id = session_id
+                else:
+                    st.error("Session ID not found in response.")
+                    return False
+            except json.JSONDecodeError:
+                st.error("Failed to parse login response.")
+                return False
             return True
         else:
             st.error("Incorrect username or password")
@@ -51,7 +64,7 @@ def send_message(message: str):
         chat_endpoint = API_URL + "/chat"
         with requests.post(
             chat_endpoint,
-            json={"message": message},
+            json={"message": message, "session_id": st.session_state.session_id},
             auth=HTTPBasicAuth(st.session_state.username, st.session_state.password),
             timeout=120,  # Increased timeout for potentially longer image generation
             stream=True,
@@ -142,10 +155,27 @@ def index_documents():
         st.error(f"Error communicating with backend: {e}")
 
 
+def reset_session_id():
+    """Reset the session ID in the session state."""
+    response = requests.post(
+        API_URL + "/session_id",
+        auth=HTTPBasicAuth(st.session_state.username, st.session_state.password),
+        timeout=50,
+    )
+    if response.status_code == 200:
+        new_session_id = response.json().get("session_id", None)
+        if new_session_id:
+            st.session_state.session_id = new_session_id
+        st.success(f"Session ID reset to: {new_session_id}")
+    else:
+        st.error("Failed to reset session ID.")
+
+
 def reset_chat_history():
     """Clear the chat history."""
     st.session_state.chat_history = []
     st.success("Chat history cleared!")
+    reset_session_id()
 
 
 # Streamlit app layout
