@@ -3,6 +3,8 @@ import streamlit as st
 import requests
 from requests.auth import HTTPBasicAuth
 from dotenv import load_dotenv
+import json
+import base64
 
 load_dotenv()
 
@@ -44,35 +46,80 @@ def login(username: str, password: str) -> bool:
 
 
 def send_message(message: str):
-    """Send a message to the FastAPI backend and stream the response with markdown formatting."""
+    """Send a message to the FastAPI backend and stream the response with markdown formatting, including images."""
     try:
         chat_endpoint = API_URL + "/chat"
         with requests.post(
             chat_endpoint,
             json={"message": message},
             auth=HTTPBasicAuth(st.session_state.username, st.session_state.password),
-            timeout=60,
+            timeout=120,  # Increased timeout for potentially longer image generation
             stream=True,
         ) as response:
             if response.status_code == 200:
-                streamed_content = ""
-                response_box = st.empty()
-                for chunk in response.iter_content(
-                    chunk_size=1024, decode_unicode=True
-                ):
+                response_chunks = []
+                response_placeholder = st.empty()  # Placeholder for streamed content
+
+                buffer = b""
+                for chunk in response.iter_content(chunk_size=1024):
                     if chunk:
-                        streamed_content += chunk
-                        # Display as markdown (remove code block if not always code)
-                        response_box.markdown(streamed_content)
+                        buffer += chunk
+                        try:
+                            # Try to decode and parse the buffer as JSON
+                            chunk_data = json.loads(buffer.decode("utf-8"))
+                            response_chunks.append(chunk_data)
+                            buffer = b""  # Clear buffer after successful parse
+
+                            # Display content as it streams
+                            with response_placeholder.container():
+                                for item in response_chunks:
+                                    if item["type"] == "text":
+                                        st.markdown(item["content"])
+                                    if item["type"] == "image":
+                                        caption_text = item.get(
+                                            "alt_text", "Generated Image"
+                                        )  # Use alt_text if available
+                                        st.image(
+                                            base64.b64decode(item["content"]),
+                                            caption=caption_text,
+                                        )
+                        except json.JSONDecodeError:
+                            # Wait for more data in buffer
+                            continue
+                # After streaming, if buffer is not empty, try one last parse
+                if buffer:
+                    try:
+                        chunk_data = json.loads(buffer.decode("utf-8"))
+                        response_chunks.append(chunk_data)
+                        with response_placeholder.container():
+                            for item in response_chunks:
+                                if item["type"] == "text":
+                                    st.markdown(item["content"])
+                                if item["type"] == "image":
+                                    caption_text = item.get(
+                                        "alt_text", "Generated Image"
+                                    )
+                                    st.image(
+                                        base64.b64decode(item["content"]),
+                                        caption=caption_text,
+                                    )
+                    except json.JSONDecodeError:
+                        st.warning(
+                            "Received malformed JSON chunk at end of stream. Skipping."
+                        )
+
+                # Store the complete parsed history
                 st.session_state.chat_history.append(
                     {
                         "role": "assistant",
-                        "content": streamed_content,
+                        "content": response_chunks,  # Store as list of dicts
                         "username": st.session_state.username,
                     }
                 )
             else:
-                st.error("Failed to send message. Please try again.")
+                st.error(
+                    f"Failed to send message: {response.status_code} - {response.text}"
+                )
     except requests.RequestException as e:
         st.error(f"Error communicating with backend: {e}")
 
@@ -133,7 +180,17 @@ else:
                 if message["role"] == "user":
                     st.markdown(message["content"])
                 else:
-                    st.markdown(f"{message['content']}")
+                    # Assistant message can be a list of content blocks
+                    for item in message["content"]:
+                        if item["type"] == "text":
+                            st.markdown(item["content"])
+                        elif item["type"] == "image":
+                            image_bytes = base64.b64decode(item["content"])
+                            st.image(
+                                image_bytes,
+                                caption="Generated Diagram/Image",
+                                use_column_width=True,
+                            )
 
     # Chat input at the bottom
     if user_text := st.chat_input("Type your message and hit Enter…"):
