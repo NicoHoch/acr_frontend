@@ -8,6 +8,8 @@ import base64
 
 load_dotenv()
 
+DB_DOCS_LIMIT = 10  # Maximum number of documents allowed in the database
+
 # Initialize session state variables
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -178,6 +180,66 @@ def reset_chat_history():
     reset_session_id()
 
 
+def get_rag_files():
+    """Fetch the list of RAG sources from the FastAPI backend."""
+    try:
+        sources_endpoint = API_URL + "/rag_sources"
+        response = requests.get(
+            sources_endpoint,
+            auth=HTTPBasicAuth(st.session_state.username, st.session_state.password),
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return set(response.json().get("sources", []))
+        else:
+            st.error("Failed to fetch RAG sources.")
+            return set()
+    except requests.RequestException as e:
+        st.error(f"Error fetching RAG sources: {e}")
+        return set()
+
+
+def load_doc_to_db():
+    # Use loader according to doc type
+    if "rag_docs" in st.session_state and st.session_state.rag_docs:
+        if "rag_sources" not in st.session_state:
+            st.session_state.rag_sources = set()
+        for doc_file in st.session_state.rag_docs:
+            if doc_file.name not in st.session_state.rag_sources:
+                if len(st.session_state.rag_sources) < DB_DOCS_LIMIT:
+                    os.makedirs("source_files", exist_ok=True)
+                    file_path = f"./source_files/{doc_file.name}"
+                    try:
+                        # Save uploaded file to disk
+                        with open(file_path, "wb") as f:
+                            f.write(doc_file.getbuffer())
+                        # Send file to backend
+                        with open(file_path, "rb") as f:
+                            files = {"file": (doc_file.name, f, doc_file.type)}
+                            response = requests.post(
+                                API_URL + "/upload_files",
+                                files=files,
+                                auth=HTTPBasicAuth(
+                                    st.session_state.username, st.session_state.password
+                                ),
+                                timeout=120,
+                            )
+                        if response.status_code == 200:
+                            st.success(f"Uploaded and indexed: {doc_file.name}")
+                            st.session_state.rag_sources.add(doc_file.name)
+                        else:
+                            st.error(
+                                f"Failed to upload {doc_file.name}: {response.text}"
+                            )
+                    except Exception as e:
+                        st.error(f"Error uploading {doc_file.name}: {e}")
+                    finally:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                else:
+                    st.error(f"Maximum number of documents reached ({DB_DOCS_LIMIT}).")
+
+
 # Streamlit app layout
 st.title("Advanced RAG Chatbot")
 
@@ -190,6 +252,24 @@ with st.sidebar:
         if st.button("Re-Index Documents"):
             index_documents()
 
+        # File upload input for RAG with documents
+        # File uploader with RAG sources as help text
+        rag_sources = get_rag_files()
+        if rag_sources:
+            rag_sources_list = "\n".join(f"- {src}" for src in rag_sources)
+            help_text = f"**Current RAG Sources:**\n{rag_sources_list}"
+        else:
+            help_text = "No RAG sources found."
+
+        st.file_uploader(
+            "📄 Upload a document",
+            type=["pdf", "txt", "docx", "md"],
+            accept_multiple_files=True,
+            on_change=load_doc_to_db,
+            key="rag_docs",
+            help=help_text,
+        )
+
 # Login page
 if not st.session_state.logged_in:
     st.subheader("Login")
@@ -201,6 +281,8 @@ if not st.session_state.logged_in:
 else:
     # Chat interface
     st.subheader("Chat Window")
+
+    st.session_state.rag_sources = get_rag_files()
 
     # Display chat history
     chat_container = st.container()
