@@ -153,6 +153,8 @@ def index_documents():
             st.success(f"{response_data['message']}")
         else:
             st.error("Failed to index documents. Please try again.")
+
+        st.session_state.rag_sources = get_rag_files()
     except requests.RequestException as e:
         st.error(f"Error communicating with backend: {e}")
 
@@ -245,7 +247,11 @@ st.title("Advanced RAG Chatbot")
 
 # Sidebar for reset button
 with st.sidebar:
+
     if st.session_state.logged_in:
+
+        st.session_state.rag_sources = get_rag_files()
+
         st.write(f"Logged in as: {st.session_state.username}")
         if st.button("Reset Chat History"):
             reset_chat_history()
@@ -254,21 +260,45 @@ with st.sidebar:
 
         # File upload input for RAG with documents
         # File uploader with RAG sources as help text
-        rag_sources = get_rag_files()
-        if rag_sources:
-            rag_sources_list = "\n".join(f"- {src}" for src in rag_sources)
-            help_text = f"**Current RAG Sources:**\n{rag_sources_list}"
-        else:
-            help_text = "No RAG sources found."
 
         st.file_uploader(
             "📄 Upload a document",
-            type=["pdf", "txt", "docx", "md"],
+            type=["pdf", "txt", "docx", "md", "csv", "json"],
             accept_multiple_files=True,
             on_change=load_doc_to_db,
             key="rag_docs",
-            help=help_text,
         )
+        if "rag_sources" in st.session_state and st.session_state.rag_sources:
+            st.markdown("**Current RAG Sources:**")
+            for src in st.session_state.rag_sources:
+                cols = st.columns([0.6, 0.4])
+                with cols[0]:
+                    st.markdown(f"- {src}")
+                with cols[1]:
+                    if st.button("Delete", key=f"delete_{src}"):
+                        try:
+                            delete_endpoint = API_URL + "/delete_rag_source"
+                            response = requests.post(
+                                delete_endpoint,
+                                json={"filename": src},
+                                auth=HTTPBasicAuth(
+                                    st.session_state.username, st.session_state.password
+                                ),
+                                timeout=30,
+                            )
+
+                            if response.status_code == 200:
+                                st.success(f"Deleted: {src}")
+                                st.session_state.rag_sources.remove(src)
+                                st.rerun()
+                            else:
+                                st.error(f"Failed to delete {src}: {response.text}")
+
+                            st.session_state.rag_sources = get_rag_files()
+                        except Exception as e:
+                            st.error(f"Error deleting {src}: {e}")
+        else:
+            st.markdown("**No RAG sources found.**")
 
 # Login page
 if not st.session_state.logged_in:
@@ -281,8 +311,6 @@ if not st.session_state.logged_in:
 else:
     # Chat interface
     st.subheader("Chat Window")
-
-    st.session_state.rag_sources = get_rag_files()
 
     # Display chat history
     chat_container = st.container()
